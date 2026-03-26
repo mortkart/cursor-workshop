@@ -11,9 +11,12 @@ jobs:
       github.event.issue.pull_request == null
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       issues: write
+      pull-requests: write
       id-token: write
+    env:
+      ANTHROPIC_FOUNDRY_RESOURCE: ${{ secrets.ANTHROPIC_FOUNDRY_RESOURCE }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,5 +26,5 @@ jobs:
         with:
           trigger_phrase: "@claude"
           anthropic_api_key: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
-          anthropic_base_url: "${{ secrets.ANTHROPIC_FOUNDRY_RESOURCE }}"
-          use_foundry: true
+          use_foundry: "true"
+          github_token: ${{ github.token }}
