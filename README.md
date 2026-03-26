@@ -36,6 +36,19 @@ npm run dev:frontend    # Frontend only
 npm run dev:backend     # Backend only
 ```
 
+## Claude GitHub Action
+
+A GitHub Action is configured to trigger Claude Code via Azure AI Foundry when someone comments `@claude` on an issue.
+
+### Required Repository Secrets
+
+| Secret | Description |
+|---|---|
+| `ANTHROPIC_FOUNDRY_RESOURCE` | Azure AI Foundry resource name |
+| `ANTHROPIC_FOUNDRY_API_KEY` | Azure AI Foundry API key |
+
+Set these in **Settings → Secrets and variables → Actions** in your GitHub repository.
+
 ## API Endpoints
 
 - `GET /api/posts` - List blog posts
