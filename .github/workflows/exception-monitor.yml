@@ -9,14 +9,15 @@ jobs:
   fetch-and-create-issues:
     runs-on: ubuntu-latest
     permissions:
+      contents: write
       issues: write
+      pull-requests: write
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_FOUNDRY_RESOURCE }}
-      ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
       LOG_ANALYTICS_WORKSPACE_ID: "a53c2ee0-9900-4756-b9c1-ab1b96a28d87"
       LOG_ANALYTICS_WORKSPACE_NAME: "law-snkm-p"
       LOG_ANALYTICS_RESOURCE_GROUP: "rg-snkm-shared-p"
@@ -51,91 +52,31 @@ jobs:
             echo "$RESULT" > /tmp/query_result.json
             echo "query_completed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub issues for top exceptions
+      - name: Analyze exceptions and create issues
         if: steps.query.outputs.query_completed == 'true'
-        uses: actions/github-script@v7
+        uses: anthropics/claude-code-action@v1
         with:
-          github-token: ${{ github.token }}
-          script: |
-            const fs = require('fs');
+          anthropic_api_key: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
+          github_token: ${{ github.token }}
+          claude_args: "--dangerously-skip-permissions"
+          prompt: |
+            You have access to a file at /tmp/query_result.json containing Azure Log Analytics query results for the top most frequent exceptions in the last 24 hours.
 
-            let results;
-            try {
-              const raw = fs.readFileSync('/tmp/query_result.json', 'utf8');
-              results = JSON.parse(raw);
-            } catch (e) {
-              console.log('Failed to parse query results:', e.message);
-              console.log('Raw content:', fs.readFileSync('/tmp/query_result.json', 'utf8'));
-              return;
-            }
+            Read the file and for each exception, create a GitHub issue in this repository. Follow these rules strictly:
 
-            // Log Analytics CLI returns an array of table rows
-            if (!Array.isArray(results) || results.length === 0) {
-              console.log('No exceptions found in the last 24 hours.');
-              return;
-            }
+            1. **Duplicate prevention**: Before creating any issue, list all existing open issues with the label "exception-monitor". If an open issue already exists with the same title, skip it.
 
-            // Fetch all open issues with the exception-monitor label to check for duplicates
-            const existingIssues = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'exception-monitor',
-              per_page: 100,
-            });
+            2. **Issue title format**: `[Exception] {type}: {problemId}`
 
-            const existingTitles = new Set(existingIssues.map(issue => issue.title));
+            3. **Issue body**: For each exception, write the issue body with these sections:
+               - **Exception Details**: A markdown table with Type, Problem ID, Message, Occurrences (24h), First Seen, Last Seen.
+               - **AI Analysis**: As a senior software engineer, write a clear summary of what the error means and its likely root cause (2-3 sentences), then provide concrete actionable steps to fix or mitigate the issue as bullet points, and a severity assessment (Critical/High/Medium/Low) with justification.
+               - **Source**: Log Analytics Workspace: law-snkm-p, Resource Group: rg-snkm-shared-p
+               - **Next Steps**: 1) Review the AI analysis above, 2) Investigate root cause in Application Insights, 3) Check recent deployments, 4) Close when resolved.
+               - Footer: "*Automatically created by the Exception Log Monitor workflow*"
 
-            for (const row of results) {
-              const problemId = row.problemId || row.problemId_ || 'Unknown';
-              const exceptionType = row.type || row.type_ || 'Unknown';
-              const message = row.outerMessage || row.outerMessage_ || 'No message';
-              const count = row.Count || row.Count_ || 0;
-              const latest = row.LatestOccurrence || row.LatestOccurrence_ || 'N/A';
-              const earliest = row.EarliestOccurrence || row.EarliestOccurrence_ || 'N/A';
+            4. **Labels**: Add both "exception-monitor" and "bug" labels to each issue.
 
-              const title = `[Exception] ${exceptionType}: ${problemId}`;
+            5. If the query result is empty or not valid JSON, log a message and do nothing.
 
-              // Skip duplicate creation
-              if (existingTitles.has(title)) {
-                console.log(`Skipping duplicate issue: ${title}`);
-                continue;
-              }
-
-              const body = [
-                `## Exception Details`,
-                ``,
-                `| Field | Value |`,
-                `|-------|-------|`,
-                `| **Type** | \`${exceptionType}\` |`,
-                `| **Problem ID** | \`${problemId}\` |`,
-                `| **Message** | ${message} |`,
-                `| **Occurrences (24h)** | ${count} |`,
-                `| **First Seen** | ${earliest} |`,
-                `| **Last Seen** | ${latest} |`,
-                ``,
-                `## Source`,
-                ``,
-                `- **Log Analytics Workspace**: ${process.env.LOG_ANALYTICS_WORKSPACE_NAME}`,
-                `- **Resource Group**: ${process.env.LOG_ANALYTICS_RESOURCE_GROUP}`,
-                ``,
-                `## Next Steps`,
-                ``,
-                `1. Investigate the root cause in Application Insights`,
-                `2. Check recent deployments for related changes`,
-                `3. Close this issue once resolved`,
-                ``,
-                `---`,
-                `*Automatically created by the Exception Log Monitor workflow*`,
-              ].join('\n');
-
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: title,
-                body: body,
-                labels: ['exception-monitor', 'bug'],
-              });
-
-              console.log(`Created issue: ${title}`);
-            }
+            Use the GitHub CLI (`gh`) to list existing issues and create new ones.
