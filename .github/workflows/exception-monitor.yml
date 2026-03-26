@@ -31,40 +31,43 @@ jobs:
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}' 
 
-      - name: Query Log Analytics for top exceptions
-        id: query
-        uses: azure/cli@v2
-        with:
-          azcliversion: latest
-          inlineScript: |
-            # Query top 2 most frequent exceptions from the last 24 hours
-            QUERY='exceptions
-            | where timestamp > ago(24h)
-            | summarize Count=count(), LatestOccurrence=max(timestamp), EarliestOccurrence=min(timestamp) by problemId, type, outerMessage
-            | top 2 by Count desc'
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
-            RESULT=$(az monitor log-analytics query \
-              --workspace "${{ env.LOG_ANALYTICS_WORKSPACE_ID }}" \
-              --analytics-query "$QUERY" \
-              --output json 2>&1)
-
-            # Write result to file to avoid shell escaping issues
-            echo "$RESULT" > /tmp/query_result.json
-            echo "query_completed=true" >> "$GITHUB_OUTPUT"
+      - name: Login with Azure CLI
+        run: |
+          az login --service-principal \
+            -u "$AZURE_CLIENT_ID" \
+            -p "$AZURE_CLIENT_SECRET" \
+            --tenant "$AZURE_TENANT_ID"
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 
       - name: Analyze exceptions and create issues
-        if: steps.query.outputs.query_completed == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
           github_token: ${{ github.token }}
           claude_args: "--dangerously-skip-permissions"
           prompt: |
-            You have access to a file at /tmp/query_result.json containing Azure Log Analytics query results for the top most frequent exceptions in the last 24 hours.
+            The Azure CLI (`az`) is installed and authenticated on this runner. Use it to query Log Analytics and then create GitHub issues.
 
-            Read the file and for each exception, create a GitHub issue in this repository. Follow these rules strictly:
+            **Step 1: Query Log Analytics**
 
-            1. **Duplicate prevention**: Before creating any issue, list all existing open issues with the label "exception-monitor". If an open issue already exists with the same title, skip it.
+            Run this command to get the top 2 most frequent exceptions from the last 24 hours:
+
+            ```
+            az monitor log-analytics query \
+              --workspace "a53c2ee0-9900-4756-b9c1-ab1b96a28d87" \
+              --analytics-query "exceptions | where timestamp > ago(24h) | summarize Count=count(), LatestOccurrence=max(timestamp), EarliestOccurrence=min(timestamp) by problemId, type, outerMessage | top 2 by Count desc" \
+              --output json
+            ```
+
+            **Step 2: Create GitHub issues**
+
+            For each exception returned, create a GitHub issue. Follow these rules strictly:
+
+            1. **Duplicate prevention**: Before creating any issue, list all existing open issues with the label "exception-monitor" using `gh issue list --label "exception-monitor" --state open`. If an open issue already exists with the same title, skip it.
 
             2. **Issue title format**: `[Exception] {type}: {problemId}`
 
@@ -78,5 +81,7 @@ jobs:
             4. **Labels**: Add both "exception-monitor" and "bug" labels to each issue.
 
             5. If the query result is empty or not valid JSON, log a message and do nothing.
+
+            Use the GitHub CLI (`gh`) to create issues.
 
             Use the GitHub CLI (`gh`) to list existing issues and create new ones.
