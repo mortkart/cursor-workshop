@@ -14,9 +14,8 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      id-token: write
     env:
-      ANTHROPIC_FOUNDRY_RESOURCE: ${{ secrets.ANTHROPIC_FOUNDRY_RESOURCE }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_FOUNDRY_RESOURCE }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,5 +25,4 @@ jobs:
         with:
           trigger_phrase: "@claude"
           anthropic_api_key: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
-          use_foundry: "true"
           github_token: ${{ github.token }}
