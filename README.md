@@ -27,7 +27,7 @@ npm run dev
 
 This starts both:
 - Frontend: http://localhost:3000
-- Backend: http://localhost:3001
+- Backend: http://localhost:3009
 
 ### Run individually
 
