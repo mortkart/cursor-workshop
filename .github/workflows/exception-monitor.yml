@@ -1,0 +1,141 @@
+name: Exception Log Monitor
+
+on:
+  schedule:
+    - cron: "0 8 * * 1-5" # Every weekday at 08:00 UTC
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  fetch-and-create-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_FOUNDRY_RESOURCE }}
+      ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
+      LOG_ANALYTICS_WORKSPACE_ID: "a53c2ee0-9900-4756-b9c1-ab1b96a28d87"
+      LOG_ANALYTICS_WORKSPACE_NAME: "law-snkm-p"
+      LOG_ANALYTICS_RESOURCE_GROUP: "rg-snkm-shared-p"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}' 
+
+      - name: Query Log Analytics for top exceptions
+        id: query
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            # Query top 2 most frequent exceptions from the last 24 hours
+            QUERY='exceptions
+            | where timestamp > ago(24h)
+            | summarize Count=count(), LatestOccurrence=max(timestamp), EarliestOccurrence=min(timestamp) by problemId, type, outerMessage
+            | top 2 by Count desc'
+
+            RESULT=$(az monitor log-analytics query \
+              --workspace "${{ env.LOG_ANALYTICS_WORKSPACE_ID }}" \
+              --analytics-query "$QUERY" \
+              --output json 2>&1)
+
+            # Write result to file to avoid shell escaping issues
+            echo "$RESULT" > /tmp/query_result.json
+            echo "query_completed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub issues for top exceptions
+        if: steps.query.outputs.query_completed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+
+            let results;
+            try {
+              const raw = fs.readFileSync('/tmp/query_result.json', 'utf8');
+              results = JSON.parse(raw);
+            } catch (e) {
+              console.log('Failed to parse query results:', e.message);
+              console.log('Raw content:', fs.readFileSync('/tmp/query_result.json', 'utf8'));
+              return;
+            }
+
+            // Log Analytics CLI returns an array of table rows
+            if (!Array.isArray(results) || results.length === 0) {
+              console.log('No exceptions found in the last 24 hours.');
+              return;
+            }
+
+            // Fetch all open issues with the exception-monitor label to check for duplicates
+            const existingIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'exception-monitor',
+              per_page: 100,
+            });
+
+            const existingTitles = new Set(existingIssues.map(issue => issue.title));
+
+            for (const row of results) {
+              const problemId = row.problemId || row.problemId_ || 'Unknown';
+              const exceptionType = row.type || row.type_ || 'Unknown';
+              const message = row.outerMessage || row.outerMessage_ || 'No message';
+              const count = row.Count || row.Count_ || 0;
+              const latest = row.LatestOccurrence || row.LatestOccurrence_ || 'N/A';
+              const earliest = row.EarliestOccurrence || row.EarliestOccurrence_ || 'N/A';
+
+              const title = `[Exception] ${exceptionType}: ${problemId}`;
+
+              // Skip duplicate creation
+              if (existingTitles.has(title)) {
+                console.log(`Skipping duplicate issue: ${title}`);
+                continue;
+              }
+
+              const body = [
+                `## Exception Details`,
+                ``,
+                `| Field | Value |`,
+                `|-------|-------|`,
+                `| **Type** | \`${exceptionType}\` |`,
+                `| **Problem ID** | \`${problemId}\` |`,
+                `| **Message** | ${message} |`,
+                `| **Occurrences (24h)** | ${count} |`,
+                `| **First Seen** | ${earliest} |`,
+                `| **Last Seen** | ${latest} |`,
+                ``,
+                `## Source`,
+                ``,
+                `- **Log Analytics Workspace**: ${process.env.LOG_ANALYTICS_WORKSPACE_NAME}`,
+                `- **Resource Group**: ${process.env.LOG_ANALYTICS_RESOURCE_GROUP}`,
+                ``,
+                `## Next Steps`,
+                ``,
+                `1. Investigate the root cause in Application Insights`,
+                `2. Check recent deployments for related changes`,
+                `3. Close this issue once resolved`,
+                ``,
+                `---`,
+                `*Automatically created by the Exception Log Monitor workflow*`,
+              ].join('\n');
+
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['exception-monitor', 'bug'],
+              });
+
+              console.log(`Created issue: ${title}`);
+            }
